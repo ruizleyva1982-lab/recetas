@@ -116,51 +116,103 @@ NOMBRE_ALMACEN = {
     11:   "Dosimetría",
 }
 
-# ── Carga de datos ────────────────────────────────────────────────────────────
-FILE_PATH   = Path(__file__).parent / "BD.xlsx"
-FACTOR_PATH = Path(__file__).parent / "Factor.xlsx"
+# ── Carga de datos desde Google Sheets ───────────────────────────────────────
+import gspread
+from google.oauth2.service_account import Credentials
 
-import hashlib, os
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
 
-def _file_hash(path):
-    """Devuelve un hash MD5 del archivo para invalidar caché cuando cambia."""
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _get_gspread_client():
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=SCOPES
+    )
+    return gspread.authorize(creds)
 
-@st.cache_data(show_spinner="Cargando datos…")
-def cargar_datos(path: str, _file_hash: str = "") -> pd.DataFrame:
-    df = pd.read_excel(path)
+def _sheet_to_df(client, sheet_id: str, worksheet: str = None) -> pd.DataFrame:
+    """Lee una hoja de Google Sheets y retorna un DataFrame."""
+    gc = client
+    sh = gc.open_by_key(sheet_id)
+    ws = sh.worksheet(worksheet) if worksheet else sh.sheet1
+    data = ws.get_all_values()
+    if not data:
+        return pd.DataFrame()
+    headers = data[0]
+    rows    = data[1:]
+    return pd.DataFrame(rows, columns=headers)
+
+@st.cache_data(show_spinner="Cargando datos…", ttl=300)
+def cargar_datos(_client) -> pd.DataFrame:
+    sheet_id = st.secrets["sheets"]["bd_id"]
+    df = _sheet_to_df(_client, sheet_id, "Hoja1")
     df["Fecha de vencimiento"] = pd.to_datetime(df["Fecha de vencimiento"], errors="coerce")
     df["De código de almacén"] = df["De código de almacén"].astype(str).str.strip()
     df["Código de almacén"]    = df["Código de almacén"].astype(str).str.strip()
     df["Número de artículo"]   = df["Número de artículo"].astype(str).str.strip()
+    # Convertir columnas numéricas
+    for col in ["Cantidad", "CantidadAtendida", "CantidadPendiente"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
-@st.cache_data(show_spinner="Cargando factores…")
-def cargar_factores(path: str) -> pd.DataFrame:
-    df = pd.read_excel(path)
+@st.cache_data(show_spinner="Cargando factores…", ttl=3600)
+def cargar_factores(_client) -> pd.DataFrame:
+    sheet_id = st.secrets["sheets"]["factor_id"]
+    df = _sheet_to_df(_client, sheet_id)
     df["CÓDIGO"] = df["CÓDIGO"].astype(str).str.strip()
+    df["FACTOR"] = pd.to_numeric(df["FACTOR"], errors="coerce")
     return df[["CÓDIGO", "PRODUCTO", "FACTOR"]]
 
-@st.cache_data(show_spinner="Cargando líneas de producción…")
-def cargar_lineas(path: str) -> pd.DataFrame:
-    df = pd.read_excel(path, sheet_name="Hoja2")
+@st.cache_data(show_spinner="Cargando líneas de producción…", ttl=3600)
+def cargar_lineas(_client) -> pd.DataFrame:
+    sheet_id = st.secrets["sheets"]["bd_id"]
+    df = _sheet_to_df(_client, sheet_id, "Hoja2")
     df["Número de artículo"] = df["Número de artículo"].astype(str).str.strip()
     return df[["Número de artículo", "Linea de Producción"]]
 
-@st.cache_data(show_spinner="Cargando tiendas…")
-def cargar_tiendas(path: str) -> pd.DataFrame:
-    df = pd.read_excel(path, sheet_name="Hoja4")
+@st.cache_data(show_spinner="Cargando tiendas…", ttl=3600)
+def cargar_tiendas(_client) -> pd.DataFrame:
+    sheet_id = st.secrets["sheets"]["bd_id"]
+    df = _sheet_to_df(_client, sheet_id, "Hoja4")
     df["Almacen"] = df["Almacen"].astype(str).str.strip()
     return df
 
-df = cargar_datos(str(FILE_PATH), _file_hash=_file_hash(FILE_PATH))
-df_factor = cargar_factores(str(FACTOR_PATH)) if FACTOR_PATH.exists() else pd.DataFrame(columns=["CÓDIGO","PRODUCTO","FACTOR"])
-df_lineas = cargar_lineas(str(FILE_PATH))
-df_tiendas = cargar_tiendas(str(FILE_PATH))
+@st.cache_data(show_spinner="Cargando estimado…", ttl=3600)
+def cargar_estimado_gsheet(_client) -> pd.DataFrame:
+    sheet_id = st.secrets["sheets"]["bd_id"]
+    df = _sheet_to_df(_client, sheet_id, "estimado")
+    semanas_cols = [c for c in df.columns if c not in ["Item", "Descripción"]]
+    df_long = df.melt(
+        id_vars=["Item", "Descripción"],
+        value_vars=semanas_cols,
+        var_name="Semana_str",
+        value_name="Estimado"
+    ).dropna(subset=["Estimado"])
+    df_long["Estimado"] = pd.to_numeric(df_long["Estimado"], errors="coerce").fillna(0)
+    df_long = df_long[df_long["Estimado"] > 0]
+    df_long["Item"] = df_long["Item"].astype(str).str.strip()
+    def parse_ini(s):
+        try: return pd.to_datetime(s.split(" - ")[0].strip(), dayfirst=True).date()
+        except: return None
+    def parse_fin(s):
+        try: return pd.to_datetime(s.split(" - ")[1].strip(), dayfirst=True).date()
+        except: return None
+    df_long["Semana_ini"] = df_long["Semana_str"].apply(parse_ini)
+    df_long["Semana_fin"] = df_long["Semana_str"].apply(parse_fin)
+    return df_long, semanas_cols
+
+# ── Inicializar cliente y cargar ──────────────────────────────────────────────
+try:
+    _gc = _get_gspread_client()
+    df         = cargar_datos(_gc)
+    df_factor  = cargar_factores(_gc)
+    df_lineas  = cargar_lineas(_gc)
+    df_tiendas = cargar_tiendas(_gc)
+except Exception as e:
+    st.error(f"❌ Error conectando a Google Sheets: {e}")
+    st.stop()
 
 NOMBRE_STR = {str(k): v for k, v in NOMBRE_ALMACEN.items()}
 
@@ -190,12 +242,9 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("**Maria Almenara · SAP BO**")
 
 # ── Botón recargar datos ─────────────────────────────────────────────────────
-import os
-from datetime import datetime
-_mtime = os.path.getmtime(str(FILE_PATH))
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 _tz_peru = timezone(timedelta(hours=-5))
-_ultima = datetime.fromtimestamp(_mtime, tz=_tz_peru).strftime("%d/%m/%Y %H:%M")
+_ultima  = datetime.now(tz=_tz_peru).strftime("%d/%m/%Y %H:%M")
 
 col_reload, col_fecha_mod, _ = st.columns([1.2, 2, 3])
 with col_reload:
@@ -205,7 +254,7 @@ with col_reload:
 with col_fecha_mod:
     st.markdown(
         f"<div style='padding:8px 0;color:#555;font-size:0.85rem;'>"
-        f"🕒 <b>Última actualización:</b> {_ultima}</div>",
+        f"🕒 <b>Última recarga:</b> {_ultima}</div>",
         unsafe_allow_html=True
     )
 
@@ -1318,39 +1367,8 @@ if pagina == "📊 Dashboard":
 # ════════════════════════════════════════════════════════════════════════════
 if pagina == "⚖️ Producción vs Tiendas":
 
-    # ── Cargar hoja Estimado ─────────────────────────────────────────────────
-    @st.cache_data
-    def cargar_estimado():
-        df_est = pd.read_excel("BD.xlsx", sheet_name="estimado")
-        # Las columnas son: Item, Descripción, y luego semanas "DD/MM/YY - DD/MM/YY"
-        semanas_cols = [c for c in df_est.columns if c not in ["Item", "Descripción"]]
-        # Convertir a formato largo
-        df_long = df_est.melt(
-            id_vars=["Item", "Descripción"],
-            value_vars=semanas_cols,
-            var_name="Semana_str",
-            value_name="Estimado"
-        ).dropna(subset=["Estimado"])
-        df_long["Estimado"] = pd.to_numeric(df_long["Estimado"], errors="coerce").fillna(0)
-        df_long["Item"] = df_long["Item"].astype(str).str.strip()
-        # Parsear fechas de la semana: "04/05/26 - 10/05/26"
-        def parse_semana(s):
-            try:
-                ini_str = s.split(" - ")[0].strip()  # "04/05/26"
-                return pd.to_datetime(ini_str, format="%d/%m/%y").date()
-            except:
-                return None
-        df_long["Semana_ini"] = df_long["Semana_str"].apply(parse_semana)
-        def parse_semana_fin(s):
-            try:
-                fin_str = s.split(" - ")[1].strip()
-                return pd.to_datetime(fin_str, format="%d/%m/%y").date()
-            except:
-                return None
-        df_long["Semana_fin"] = df_long["Semana_str"].apply(parse_semana_fin)
-        return df_long, semanas_cols
-
-    df_estimado, semanas_est_cols = cargar_estimado()
+    # ── Cargar hoja Estimado desde Google Sheets ────────────────────────────
+    df_estimado, semanas_est_cols = cargar_estimado_gsheet(_gc)
 
     st.markdown(
         """
