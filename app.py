@@ -258,7 +258,8 @@ with col_reload:
 with col_fecha_mod:
     st.markdown(
         f"<div style='padding:8px 0;color:#555;font-size:0.85rem;'>"
-        f"🕒 <b>Última recarga:</b> {_ultima}</div>",
+        f"🕒 <b>Última recarga:</b> {_ultima} &nbsp;|&nbsp; "
+        f"📊 <b>Filas BD:</b> {len(df):,}</div>",
         unsafe_allow_html=True
     )
 
