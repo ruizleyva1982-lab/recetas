@@ -119,8 +119,18 @@ NOMBRE_ALMACEN = {
 FILE_PATH   = Path(__file__).parent / "BD.xlsx"
 FACTOR_PATH = Path(__file__).parent / "Factor.xlsx"
 
-@st.cache_data(show_spinner="Cargando datos…", ttl=60)
-def cargar_datos(path: str) -> pd.DataFrame:
+import hashlib, os
+
+def _file_hash(path):
+    """Devuelve un hash MD5 del archivo para invalidar caché cuando cambia."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+@st.cache_data(show_spinner="Cargando datos…")
+def cargar_datos(path: str, _file_hash: str = "") -> pd.DataFrame:
     df = pd.read_excel(path)
     df["Fecha de vencimiento"] = pd.to_datetime(df["Fecha de vencimiento"], errors="coerce")
     df["De código de almacén"] = df["De código de almacén"].astype(str).str.strip()
@@ -146,7 +156,7 @@ def cargar_tiendas(path: str) -> pd.DataFrame:
     df["Almacen"] = df["Almacen"].astype(str).str.strip()
     return df
 
-df = cargar_datos(str(FILE_PATH))
+df = cargar_datos(str(FILE_PATH), _file_hash=_file_hash(FILE_PATH))
 df_factor = cargar_factores(str(FACTOR_PATH)) if FACTOR_PATH.exists() else pd.DataFrame(columns=["CÓDIGO","PRODUCTO","FACTOR"])
 df_lineas = cargar_lineas(str(FILE_PATH))
 df_tiendas = cargar_tiendas(str(FILE_PATH))
@@ -189,11 +199,7 @@ _ultima = datetime.fromtimestamp(_mtime, tz=_tz_peru).strftime("%d/%m/%Y %H:%M")
 col_reload, col_fecha_mod, _ = st.columns([1.2, 2, 3])
 with col_reload:
     if st.button("🔄 Recargar datos", use_container_width=True):
-        cargar_datos.clear()
-        cargar_factores.clear()
-        cargar_lineas.clear()
-        cargar_tiendas.clear()
-        st.cache_data.clear()  # limpia cualquier otro caché (estimado, etc.)
+        st.cache_data.clear()
         st.rerun()
 with col_fecha_mod:
     st.markdown(
