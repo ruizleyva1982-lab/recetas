@@ -143,8 +143,9 @@ def _sheet_to_df(client, sheet_id: str, worksheet: str = None) -> pd.DataFrame:
     rows    = data[1:]
     return pd.DataFrame(rows, columns=headers)
 
-@st.cache_data(show_spinner="Cargando datos…", ttl=300)
-def cargar_datos(_client) -> pd.DataFrame:
+@st.cache_data(show_spinner="Cargando datos…", ttl=60)
+def cargar_datos() -> pd.DataFrame:
+    _client = _get_gspread_client()
     sheet_id = st.secrets["sheets"]["bd_id"]
     df = _sheet_to_df(_client, sheet_id, "Hoja1")
     df["Fecha de vencimiento"] = pd.to_datetime(df["Fecha de vencimiento"], errors="coerce")
@@ -158,7 +159,8 @@ def cargar_datos(_client) -> pd.DataFrame:
     return df
 
 @st.cache_data(show_spinner="Cargando factores…", ttl=3600)
-def cargar_factores(_client) -> pd.DataFrame:
+def cargar_factores() -> pd.DataFrame:
+    _client = _get_gspread_client()
     sheet_id = st.secrets["sheets"]["factor_id"]
     df = _sheet_to_df(_client, sheet_id)
     df["CÓDIGO"] = df["CÓDIGO"].astype(str).str.strip()
@@ -166,21 +168,24 @@ def cargar_factores(_client) -> pd.DataFrame:
     return df[["CÓDIGO", "PRODUCTO", "FACTOR"]]
 
 @st.cache_data(show_spinner="Cargando líneas de producción…", ttl=3600)
-def cargar_lineas(_client) -> pd.DataFrame:
+def cargar_lineas() -> pd.DataFrame:
+    _client = _get_gspread_client()
     sheet_id = st.secrets["sheets"]["bd_id"]
     df = _sheet_to_df(_client, sheet_id, "Hoja2")
     df["Número de artículo"] = df["Número de artículo"].astype(str).str.strip()
     return df[["Número de artículo", "Linea de Producción"]]
 
 @st.cache_data(show_spinner="Cargando tiendas…", ttl=3600)
-def cargar_tiendas(_client) -> pd.DataFrame:
+def cargar_tiendas() -> pd.DataFrame:
+    _client = _get_gspread_client()
     sheet_id = st.secrets["sheets"]["bd_id"]
     df = _sheet_to_df(_client, sheet_id, "Hoja4")
     df["Almacen"] = df["Almacen"].astype(str).str.strip()
     return df
 
 @st.cache_data(show_spinner="Cargando estimado…", ttl=3600)
-def cargar_estimado_gsheet(_client) -> pd.DataFrame:
+def cargar_estimado_gsheet() -> pd.DataFrame:
+    _client = _get_gspread_client()
     sheet_id = st.secrets["sheets"]["bd_id"]
     df = _sheet_to_df(_client, sheet_id, "estimado")
     semanas_cols = [c for c in df.columns if c not in ["Item", "Descripción"]]
@@ -205,11 +210,10 @@ def cargar_estimado_gsheet(_client) -> pd.DataFrame:
 
 # ── Inicializar cliente y cargar ──────────────────────────────────────────────
 try:
-    _gc = _get_gspread_client()
-    df         = cargar_datos(_gc)
-    df_factor  = cargar_factores(_gc)
-    df_lineas  = cargar_lineas(_gc)
-    df_tiendas = cargar_tiendas(_gc)
+    df         = cargar_datos()
+    df_factor  = cargar_factores()
+    df_lineas  = cargar_lineas()
+    df_tiendas = cargar_tiendas()
 except Exception as e:
     st.error(f"❌ Error conectando a Google Sheets: {e}")
     st.stop()
@@ -1368,7 +1372,7 @@ if pagina == "📊 Dashboard":
 if pagina == "⚖️ Producción vs Tiendas":
 
     # ── Cargar hoja Estimado desde Google Sheets ────────────────────────────
-    df_estimado, semanas_est_cols = cargar_estimado_gsheet(_gc)
+    df_estimado, semanas_est_cols = cargar_estimado_gsheet()
 
     st.markdown(
         """
