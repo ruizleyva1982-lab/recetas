@@ -1,3 +1,4 @@
+# BD actualizado: 13/05/2026 18:46:49
 import streamlit as st
 import pandas as pd
 import plotly.express as px
